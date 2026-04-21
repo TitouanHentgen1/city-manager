@@ -44,3 +44,32 @@ int main() {
     }
     return 0;
 }
+/* /prog.c fileOut.txt dir
+pass dir -> check entries - regular files ? -> write path in output file
+
+DIR *dir
+struct dirent in; infodir?
+
+struct stat infoOut;
+
+open(...);
+stat(fOut, &infOut);
+
+new struct stat for each entry
+
+infoOut.st_mode ->
+S_ISREG
+S_ISDIR (infoDir.st_mode)
+
+opendir(dir);
+while (in = readdir( ) )
+in -> d_name
+sprintf(path, "%s/%s", argv[1], in->d_name);
+
+if another directory there, don't need to parse it
+*/
+
+/*
+   Usage: ./file fileOut.txt dir
+   pass dir -> check entries - regular files ? -> write path in output file
+*/

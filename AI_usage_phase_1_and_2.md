@@ -82,24 +82,25 @@ AI tool used :Claude(claude.ai)
 The monitor reports :
 Functions 
 
-'static void handler_sigusr1(int sig){
+    static void handler_sigusr1(int sig){
     
     (void)sig;
     const char*msg="[monitor]Report added /n";
     write(STDOUT_FILENO,msg,strlen(msg));
-}
+    }
 
-static void handler_sigint(int sig ){
+    static void handler_sigint(int sig ){
     
     (void)sig;
     const char*msg="[monitor]SIGINT received — shutting down./n"
     write(STDOUT_FILENO,msg,strlen(msg));
     unlink(PID_FILE);
     exit(0);
-}
+    }
 
 Main 
-int main(void) {
+
+    int main(void) {
     
     int fd =open(PID_FILE,O_WRONLY|O_CREAT|O_TRUNC,0644);
     if(fd==-1){perror("open .monitor_pid");return 1;}
@@ -124,4 +125,4 @@ int main(void) {
     sa.sa_flags=0;
     if (sigaction(SIGINT,&sa,NULL)==-1) { perror("sigaction SIGINT"); unlink(PID_FILE); return 1; }                                                                                                                while (1) pause();
     return 0;
-}
+    }

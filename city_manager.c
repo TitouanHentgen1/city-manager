@@ -34,6 +34,37 @@ void log_action(const char *district, const char *role, const char *user, const 
     close(fd);
 }
 
+void notify_monitor(const char *district, const char *role, const char *user) {
+    int fd=open(MONITOR_PID_FILE,O_RDONLY);
+    if (fd==-1) {
+        log_action(district,role,user,"add - WARNING: monitor not found (no .monitor_pid)");
+        return;
+    }
+    char buf[32];
+    memset(buf,0,sizeof(buf));
+    ssize_t n=read(fd,buf,sizeof(buf)-1);
+    close(fd);
+    if (n<=0) {
+        log_action(district,role,user,"add - ERROR: .monitor_pid is empty or unreadable");
+        return;
+    }
+    pid_t monitor_pid=(pid_t)atoi(buf);
+    if (monitor_pid<=0) {
+        log_action(district,role,user,"add - ERROR: invalid PID in .monitor_pid");
+        return;
+    }
+    if (kill(monitor_pid,SIGUSR1)==-1) {
+        char msg[128];
+        snprintf(msg,sizeof(msg),"add - ERROR: kill(SIGUSR1, pid=%d) failed: %s",
+                 (int)monitor_pid,strerror(errno));
+        log_action(district,role,user,msg);
+    } else {
+        char msg[128];
+        snprintf(msg,sizeof(msg),"add - monitor notified via SIGUSR1 (pid=%d)",(int)monitor_pid);
+        log_action(district,role,user,msg);
+    }
+}
+
 void create_district(const char *id) {
     char dir[256],reports[256],cfg[256],logf[256],link[256];
     snprintf(dir,    sizeof(dir),    "districts/%s",id);
@@ -65,7 +96,7 @@ void cmd_add(const char *district, const char *role, const char *user,
     char path[256];
     snprintf(path,sizeof(path),"districts/%s/reports.dat",district);
     create_district(district);
-    if (!check_access(path,role,1)) { fprintf(stderr,"Acces refuse\n"); return; }
+    if (!check_access(path,role,1)) { fprintf(stderr,"Access denied\n"); return; }
 
     struct stat st;
     int next_id=1;
@@ -84,31 +115,33 @@ void cmd_add(const char *district, const char *role, const char *user,
     int fd=open(path,O_WRONLY|O_APPEND);
     if (fd==-1) { perror("open"); return; }
     if (write(fd,&r,sizeof(r))!=(ssize_t)sizeof(r)) perror("write");
-    else printf("Rapport #%d ajoute dans '%s'\n",next_id,district);
+    else printf("Report #%d added to '%s'\n",next_id,district);
     close(fd);
-    log_action(district,"manager",user,"add");
+
+    log_action(district,role,user,"add");
+    notify_monitor(district,role,user);
 }
 
 void cmd_list(const char *district, const char *role) {
     char path[256];
     snprintf(path,sizeof(path),"districts/%s/reports.dat",district);
-    if (!check_access(path,role,0)) { fprintf(stderr,"Acces refuse\n"); return; }
+    if (!check_access(path,role,0)) { fprintf(stderr,"Access denied\n"); return; }
 
     struct stat st;
-    if (stat(path,&st)==-1) { fprintf(stderr,"District introuvable\n"); return; }
+    if (stat(path,&st)==-1) { fprintf(stderr,"District not found\n"); return; }
 
     char perm[10], mtime[32];
     mode_to_str(st.st_mode,perm);
     strftime(mtime,sizeof(mtime),"%Y-%m-%d %H:%M",localtime(&st.st_mtime));
-    printf("=== %s ===\nPermissions: %s | Taille: %lld octets | Modifie: %s\n",
+    printf("=== %s ===\nPermissions: %s | Size: %lld bytes | Modified: %s\n",
            district,perm,(long long)st.st_size,mtime);
 
     char link[256];
     snprintf(link,sizeof(link),"active_reports-%s",district);
     struct stat lst;
     if (lstat(link,&lst)==0 && S_ISLNK(lst.st_mode)) {
-        if (stat(link,&st)==-1 && errno==ENOENT) fprintf(stderr,"Warning: lien brise: %s\n",link);
-        else printf("Lien: %s -> OK\n",link);
+        if (stat(link,&st)==-1 && errno==ENOENT) fprintf(stderr,"Warning: broken symlink: %s\n",link);
+        else printf("Symlink: %s -> OK\n",link);
     }
     printf("---\n");
 
@@ -123,14 +156,15 @@ void cmd_list(const char *district, const char *role) {
         count++;
     }
     close(fd);
-    printf(count==0?"(Aucun rapport)\n":"Total: %d rapport(s)\n",count);
+    if (count==0) printf("(No reports)\n");
+    else printf("Total: %d report(s)\n",count);
     log_action(district,"manager",role,"list");
 }
 
 void cmd_view(const char *district, int report_id, const char *role) {
     char path[256];
     snprintf(path,sizeof(path),"districts/%s/reports.dat",district);
-    if (!check_access(path,role,0)) { fprintf(stderr,"Acces refuse\n"); return; }
+    if (!check_access(path,role,0)) { fprintf(stderr,"Access denied\n"); return; }
 
     int fd=open(path,O_RDONLY);
     if (fd==-1) { perror("open"); return; }
@@ -139,15 +173,15 @@ void cmd_view(const char *district, int report_id, const char *role) {
         if (r.report_id==report_id) { found=1; break; }
     close(fd);
 
-    if (!found) { fprintf(stderr,"Rapport #%d introuvable\n",report_id); return; }
+    if (!found) { fprintf(stderr,"Report #%d not found\n",report_id); return; }
     char ts[32]; time_t tmp=r.timestamp;
     strftime(ts,sizeof(ts),"%Y-%m-%d %H:%M:%S",localtime(&tmp));
-    printf("=== Rapport #%d ===\nInspecteur : %s\nCategorie  : %s\nSeverite   : %d/3\nGPS        : %.6f, %.6f\nDate       : %s\nDescription: %s\n",
+    printf("=== Report #%d ===\nInspector  : %s\nCategory   : %s\nSeverity   : %d/3\nGPS        : %.6f, %.6f\nDate       : %s\nDescription: %s\n",
            r.report_id,r.inspector,r.category,r.severity,r.latitude,r.longitude,ts,r.description);
 }
 
 void cmd_remove_report(const char *district, int report_id, const char *role, const char *user) {
-    if (strcmp(role,"manager")!=0) { fprintf(stderr,"Manager uniquement\n"); return; }
+    if (strcmp(role,"manager")!=0) { fprintf(stderr,"Manager only\n"); return; }
     char path[256];
     snprintf(path,sizeof(path),"districts/%s/reports.dat",district);
 
@@ -163,7 +197,7 @@ void cmd_remove_report(const char *district, int report_id, const char *role, co
         read(fd,&r,sizeof(r));
         if (r.report_id==report_id) { idx=i; break; }
     }
-    if (idx==-1) { fprintf(stderr,"Rapport #%d introuvable\n",report_id); close(fd); return; }
+    if (idx==-1) { fprintf(stderr,"Report #%d not found\n",report_id); close(fd); return; }
 
     for (int i=idx+1;i<total;i++) {
         Report r;
@@ -174,12 +208,12 @@ void cmd_remove_report(const char *district, int report_id, const char *role, co
     }
     ftruncate(fd,(off_t)(total-1)*sizeof(Report));
     close(fd);
-    printf("Rapport #%d supprime (%d->%d)\n",report_id,total,total-1);
+    printf("Report #%d removed (%d -> %d)\n",report_id,total,total-1);
     log_action(district,role,user,"remove_report");
 }
 
 void cmd_update_threshold(const char *district, int value, const char *role, const char *user) {
-    if (strcmp(role,"manager")!=0) { fprintf(stderr,"Manager uniquement\n"); return; }
+    if (strcmp(role,"manager")!=0) { fprintf(stderr,"Manager only\n"); return; }
     char path[256];
     snprintf(path,sizeof(path),"districts/%s/district.cfg",district);
 
@@ -187,15 +221,15 @@ void cmd_update_threshold(const char *district, int value, const char *role, con
     if (stat(path,&st)==-1) { perror("stat"); return; }
     if ((st.st_mode&0777)!=0640) {
         char p[10]; mode_to_str(st.st_mode,p);
-        fprintf(stderr,"Permissions incorrectes sur district.cfg (%s)\n",p); return;
+        fprintf(stderr,"Wrong permissions on district.cfg (%s)\n",p); return;
     }
-    if (value<1||value>3) { fprintf(stderr,"Seuil invalide (1-3)\n"); return; }
+    if (value<1||value>3) { fprintf(stderr,"Invalid threshold (1-3)\n"); return; }
 
     int fd=open(path,O_WRONLY|O_TRUNC);
     if (fd==-1) { perror("open"); return; }
     char buf[32]; int len=snprintf(buf,sizeof(buf),"threshold=%d\n",value);
     write(fd,buf,len); close(fd);
-    printf("Seuil -> %d pour '%s'\n",value,district);
+    printf("Threshold set to %d for '%s'\n",value,district);
     log_action(district,role,user,"update_threshold");
 }
 
@@ -218,7 +252,7 @@ int parse_condition(const char *input, char *field, char *op, char *value) {
 
     if (strcmp(op,"==")==0||strcmp(op,"!=")==0||strcmp(op,"<")==0||
         strcmp(op,"<=")==0||strcmp(op,">")==0||strcmp(op,">=")==0) return 1;
-    fprintf(stderr,"Operateur inconnu: '%s'\n",op); return 0;
+    fprintf(stderr,"Unknown operator: '%s'\n",op); return 0;
 }
 
 static int cmp_int(int a,const char *op,int b) {
@@ -247,17 +281,17 @@ int match_condition(Report *r, const char *field, const char *op, const char *va
     if (strcmp(field,"timestamp")==0) return cmp_int((int)r->timestamp,op,(int)atol(value));
     if (strcmp(field,"category") ==0) return cmp_str(r->category,op,value);
     if (strcmp(field,"inspector")==0) return cmp_str(r->inspector,op,value);
-    fprintf(stderr,"Champ inconnu: '%s'\n",field); return 0;
+    fprintf(stderr,"Unknown field: '%s'\n",field); return 0;
 }
 
 void cmd_filter(const char *district, const char *role, int cond_count, char **conditions) {
     char path[256];
     snprintf(path,sizeof(path),"districts/%s/reports.dat",district);
-    if (!check_access(path,role,0)) { fprintf(stderr,"Acces refuse\n"); return; }
+    if (!check_access(path,role,0)) { fprintf(stderr,"Access denied\n"); return; }
 
     int fd=open(path,O_RDONLY);
     if (fd==-1) { perror("open"); return; }
-    printf("=== Filtre sur '%s' ===\n",district);
+    printf("=== Filter on '%s' ===\n",district);
     Report r; int found=0;
 
     while (read(fd,&r,sizeof(r))==(ssize_t)sizeof(r)) {
@@ -276,48 +310,93 @@ void cmd_filter(const char *district, const char *role, int cond_count, char **c
         }
     }
     close(fd);
-    printf(found==0?"(Aucun resultat)\n":"Total: %d rapport(s)\n",found);
+    if (found==0) printf("(No results)\n");
+    else printf("Total: %d report(s)\n",found);
+}
+
+void cmd_remove_district(const char *district, const char *role, const char *user) {
+    if (strcmp(role,"manager")!=0) {
+        fprintf(stderr,"Error: remove_district is manager only\n");
+        return;
+    }
+    if (!district||*district=='\0'||strchr(district,'/')!=NULL||strchr(district,'.')!=NULL) {
+        fprintf(stderr,"Error: invalid district name '%s'\n",district?district:"");
+        return;
+    }
+
+    char dir_path[300];
+    snprintf(dir_path,sizeof(dir_path),"districts/%s",district);
+
+    struct stat st;
+    if (stat(dir_path,&st)==-1||!S_ISDIR(st.st_mode)) {
+        fprintf(stderr,"Error: district '%s' does not exist\n",district);
+        return;
+    }
+
+    pid_t pid=fork();
+    if (pid<0) { perror("fork"); return; }
+
+    if (pid==0) {
+        execlp("rm","rm","-rf",dir_path,(char *)NULL);
+        perror("execlp");
+        _exit(1);
+    }
+
+    int status;
+    if (waitpid(pid,&status,0)==-1) { perror("waitpid"); return; }
+
+    if (WIFEXITED(status)&&WEXITSTATUS(status)==0) {
+        char link[256];
+        snprintf(link,sizeof(link),"active_reports-%s",district);
+        if (unlink(link)==-1&&errno!=ENOENT) perror("unlink symlink");
+        printf("District '%s' and its symlink removed\n",district);
+    } else {
+        fprintf(stderr,"Error: rm -rf failed (code=%d)\n",
+                WIFEXITED(status)?WEXITSTATUS(status):-1);
+    }
 }
 
 static void usage(void) {
     fprintf(stderr,
-        "Usage: city_manager --role <r> --user <u> --add <district> [--lat f] [--lon f] [--category s] [--severity n] [--desc s]\n"
-        "                    --role <r> --user <u> --list <district>\n"
-        "                    --role <r> --user <u> --view <district> <id>\n"
-        "                    --role manager --user <u> --remove_report <district> <id>\n"
-        "                    --role manager --user <u> --update_threshold <district> <n>\n"
-        "                    --role <r> --user <u> --filter <district> <cond...>\n");
+        "Usage:\n"
+        "  city_manager --role <r> --user <u> --add <district> [--lat f] [--lon f] [--category s] [--severity n] [--desc s]\n"
+        "  city_manager --role <r> --user <u> --list <district>\n"
+        "  city_manager --role <r> --user <u> --view <district> <id>\n"
+        "  city_manager --role manager --user <u> --remove_report <district> <id>\n"
+        "  city_manager --role manager --user <u> --update_threshold <district> <n>\n"
+        "  city_manager --role <r> --user <u> --filter <district> <cond...>\n"
+        "  city_manager --role manager --user <u> --remove_district <district>\n"
+    );
 }
 
 int main(int argc, char *argv[]) {
     char role[32]="",user[64]="",command[32]="",district[64]="";
     int report_id=-1,threshold=-1,severity=1;
     double lat=0.0,lon=0.0;
-    char category[32]="unknown",description[256]="Aucune description";
+    char category[32]="unknown",description[256]="No description";
     char **conditions=NULL; int cond_count=0;
 
     if (argc<2) { usage(); return 1; }
 
     for (int i=1;i<argc;i++) {
-        if      (!strcmp(argv[i],"--role")   &&i+1<argc) strncpy(role,    argv[++i],sizeof(role)-1);
-        else if (!strcmp(argv[i],"--user")   &&i+1<argc) strncpy(user,    argv[++i],sizeof(user)-1);
-        else if (!strcmp(argv[i],"--add")    &&i+1<argc) { strcpy(command,"add");    strncpy(district,argv[++i],sizeof(district)-1); }
-        else if (!strcmp(argv[i],"--list")   &&i+1<argc) { strcpy(command,"list");   strncpy(district,argv[++i],sizeof(district)-1); }
-        else if (!strcmp(argv[i],"--view")   &&i+2<argc) { strcpy(command,"view");   strncpy(district,argv[++i],sizeof(district)-1); report_id=atoi(argv[++i]); }
-        else if (!strcmp(argv[i],"--remove_report")&&i+2<argc) { strcpy(command,"remove_report"); strncpy(district,argv[++i],sizeof(district)-1); report_id=atoi(argv[++i]); }
-        else if (!strcmp(argv[i],"--update_threshold")&&i+2<argc) { strcpy(command,"update_threshold"); strncpy(district,argv[++i],sizeof(district)-1); threshold=atoi(argv[++i]); }
-        else if (!strcmp(argv[i],"--filter") &&i+1<argc) { strcpy(command,"filter"); strncpy(district,argv[++i],sizeof(district)-1); conditions=&argv[i+1]; cond_count=argc-i-1; break; }
-        else if (!strcmp(argv[i],"--lat")    &&i+1<argc) lat=atof(argv[++i]);
-        else if (!strcmp(argv[i],"--lon")    &&i+1<argc) lon=atof(argv[++i]);
-        else if (!strcmp(argv[i],"--category")&&i+1<argc) strncpy(category,argv[++i],sizeof(category)-1);
-        else if (!strcmp(argv[i],"--severity")&&i+1<argc) severity=atoi(argv[++i]);
-        else if (!strcmp(argv[i],"--desc")   &&i+1<argc) strncpy(description,argv[++i],sizeof(description)-1);
+        if      (!strcmp(argv[i],"--role")             &&i+1<argc) strncpy(role,    argv[++i],sizeof(role)-1);
+        else if (!strcmp(argv[i],"--user")             &&i+1<argc) strncpy(user,    argv[++i],sizeof(user)-1);
+        else if (!strcmp(argv[i],"--add")              &&i+1<argc) { strcpy(command,"add");              strncpy(district,argv[++i],sizeof(district)-1); }
+        else if (!strcmp(argv[i],"--list")             &&i+1<argc) { strcpy(command,"list");             strncpy(district,argv[++i],sizeof(district)-1); }
+        else if (!strcmp(argv[i],"--view")             &&i+2<argc) { strcpy(command,"view");             strncpy(district,argv[++i],sizeof(district)-1); report_id=atoi(argv[++i]); }
+        else if (!strcmp(argv[i],"--remove_report")    &&i+2<argc) { strcpy(command,"remove_report");    strncpy(district,argv[++i],sizeof(district)-1); report_id=atoi(argv[++i]); }
+        else if (!strcmp(argv[i],"--update_threshold") &&i+2<argc) { strcpy(command,"update_threshold"); strncpy(district,argv[++i],sizeof(district)-1); threshold=atoi(argv[++i]); }
+        else if (!strcmp(argv[i],"--remove_district")  &&i+1<argc) { strcpy(command,"remove_district");  strncpy(district,argv[++i],sizeof(district)-1); }
+        else if (!strcmp(argv[i],"--filter")           &&i+1<argc) { strcpy(command,"filter");           strncpy(district,argv[++i],sizeof(district)-1); conditions=&argv[i+1]; cond_count=argc-i-1; break; }
+        else if (!strcmp(argv[i],"--lat")              &&i+1<argc) lat=atof(argv[++i]);
+        else if (!strcmp(argv[i],"--lon")              &&i+1<argc) lon=atof(argv[++i]);
+        else if (!strcmp(argv[i],"--category")         &&i+1<argc) strncpy(category,argv[++i],sizeof(category)-1);
+        else if (!strcmp(argv[i],"--severity")         &&i+1<argc) severity=atoi(argv[++i]);
+        else if (!strcmp(argv[i],"--desc")             &&i+1<argc) strncpy(description,argv[++i],sizeof(description)-1);
     }
 
-    if (!*role||(!strcmp(role,"manager")!=0&&!strcmp(role,"inspector")!=0&&strcmp(role,"manager")!=0&&strcmp(role,"inspector")!=0)) {
-        if (!*role) { fprintf(stderr,"--role requis\n"); usage(); return 1; }
-    }
-    if (!*command) { fprintf(stderr,"Commande manquante\n"); usage(); return 1; }
+    if (!*role) { fprintf(stderr,"--role required\n"); usage(); return 1; }
+    if (!*command) { fprintf(stderr,"Missing command\n"); usage(); return 1; }
 
     if      (!strcmp(command,"add"))              cmd_add(district,role,user,lat,lon,category,severity,description);
     else if (!strcmp(command,"list"))             cmd_list(district,role);
@@ -325,7 +404,8 @@ int main(int argc, char *argv[]) {
     else if (!strcmp(command,"remove_report"))    cmd_remove_report(district,report_id,role,user);
     else if (!strcmp(command,"update_threshold")) cmd_update_threshold(district,threshold,role,user);
     else if (!strcmp(command,"filter"))           cmd_filter(district,role,cond_count,conditions);
-    else { fprintf(stderr,"Commande inconnue\n"); usage(); return 1; }
+    else if (!strcmp(command,"remove_district"))  cmd_remove_district(district,role,user);
+    else { fprintf(stderr,"Unknown command\n"); usage(); return 1; }
 
     return 0;
 }

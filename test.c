@@ -1,111 +1,232 @@
-/*new command deletes entire district directory and all contents
-Create a child process,calls external command rm-rf<district_directory>*/
+City HUB
+
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <sys/types.h>
 #include <sys/wait.h>
+#include <signal.h>
+#include <errno.h>
 
-void remove_district(const*char district){
-    if(strcmp(role,"manager")!=0){
-        fprintf(stder,"Only Manager");
-        return;
-    }
-    char district_path[256];
-    char symlink_path[256];
+#define MAX_LINE 512
 
-    pid_t pid=fork();
-
-    if(pid=<0){
-        perror("Fork failed");
-        return;
+static void run_hub_mon(void) {
+    int pipefd[2];
+    if (pipe(pipefd) == -1) {
+        perror("[hub_mon] pipe");
+        _exit(1);
     }
 
-    if(pid==0){
-        execlp("rm","rm","-rf",district_path,(char*)NULL);
-        perror("System Failed")
-        exit(EXIT Failure);
+    pid_t monitor_pid = fork();
+    if (monitor_pid < 0) {
+        perror("[hub_mon] fork monitor");
+        _exit(1);
     }
 
-    if(pid>0){
-        int state;
-        wait(pid,&state,0);
-        if (WIFEXITED(state) && WEXITSTATUS(state) == 0) {
-            printf("District directory '%s' deleted successfully.\n", district_path);
-            
-            if (unlink(symlink_path) == 0) {
-                printf("Symlink '%s' removed successfully.\n", symlink_path);
-            } else {
-                perror("Warning: Failed to remove symlink");
-            }
+    if (monitor_pid == 0) {
+        close(pipefd[0]);
+        if (dup2(pipefd[1], STDOUT_FILENO) == -1) {
+            perror("[monitor] dup2");
+            _exit(1);
+        }
+        close(pipefd[1]);
+        execlp("./monitor_reports", "./monitor_reports", (char *)NULL);
+        perror("[monitor] execlp");
+        _exit(1);
+    }
+
+    close(pipefd[1]);
+
+    char buf[MAX_LINE];
+    int monitor_done = 0;
+
+    while (!monitor_done) {
+        int pos = 0;
+        ssize_t n;
+        while (pos < MAX_LINE - 1) {
+            n = read(pipefd[0], buf + pos, 1);
+            if (n <= 0) { monitor_done = 1; break; }
+            if (buf[pos] == '\n') { pos++; break; }
+            pos++;
+        }
+        if (pos == 0) break;
+        buf[pos] = '\0';
+
+        char display[MAX_LINE];
+        strncpy(display, buf, MAX_LINE - 1);
+        display[MAX_LINE - 1] = '\0';
+        int dlen = strlen(display);
+        if (dlen > 0 && display[dlen - 1] == '\n') display[dlen - 1] = '\0';
+
+        if (strncmp(buf, "MSG:", 4) == 0) {
+            printf("[monitor] %s\n", display + 4);
+            fflush(stdout);
+        } else if (strncmp(buf, "ERR:", 4) == 0) {
+            printf("[monitor ERROR] %s\n", display + 4);
+            fflush(stdout);
+        } else if (strncmp(buf, "END:", 4) == 0) {
+            printf("[monitor] %s\n", display + 4);
+            printf("[hub_mon] Monitor has ended.\n");
+            fflush(stdout);
+            monitor_done = 1;
         } else {
-            fprintf(stderr, "Error: Failed to delete directory '%s'.\n", district_path);
+            printf("[monitor] %s\n", display);
+            fflush(stdout);
+        }
+    }
+
+    close(pipefd[0]);
+    waitpid(monitor_pid, NULL, 0);
+    printf("[hub_mon] Exiting.\n");
+    fflush(stdout);
+    _exit(0);
+}
+
+static void cmd_start_monitor(void) {
+    pid_t hub_mon_pid = fork();
+    if (hub_mon_pid < 0) {
+        perror("fork hub_mon");
+        return;
+    }
+    if (hub_mon_pid == 0) {
+        run_hub_mon();
+        _exit(0);
+    }
+    printf("[city_hub] hub_mon started (PID=%d). Monitor output will appear here.\n",
+           (int)hub_mon_pid);
+    fflush(stdout);
+}
+
+static void cmd_calculate_scores(char **districts, int count) {
+    if (count == 0) {
+        printf("Usage: calculate_scores <district1> [district2] ...\n");
+        return;
+    }
+
+    printf("=== Combined Workload Report ===\n");
+    fflush(stdout);
+
+    for (int i = 0; i < count; i++) {
+        const char *district = districts[i];
+
+        if (strchr(district, '/') || strchr(district, '.')) {
+            printf("[scorer] Invalid district name: '%s'\n", district);
+            continue;
         }
 
+        int pipefd[2];
+        if (pipe(pipefd) == -1) {
+            perror("pipe");
+            continue;
+        }
 
+        pid_t scorer_pid = fork();
+        if (scorer_pid < 0) {
+            perror("fork scorer");
+            close(pipefd[0]);
+            close(pipefd[1]);
+            continue;
+        }
+
+        if (scorer_pid == 0) {
+            close(pipefd[0]);
+            if (dup2(pipefd[1], STDOUT_FILENO) == -1) {
+                perror("[scorer] dup2");
+                _exit(1);
+            }
+            close(pipefd[1]);
+            execlp("./scorer", "./scorer", district, (char *)NULL);
+            perror("[scorer] execlp");
+            _exit(1);
+        }
+
+        close(pipefd[1]);
+
+        char buf[MAX_LINE];
+        ssize_t n;
+        while ((n = read(pipefd[0], buf, sizeof(buf) - 1)) > 0) {
+            buf[n] = '\0';
+            printf("%s", buf);
+            fflush(stdout);
+        }
+        close(pipefd[0]);
+
+        int status;
+        waitpid(scorer_pid, &status, 0);
+        if (WIFEXITED(status) && WEXITSTATUS(status) != 0)
+            printf("[scorer] Process for '%s' exited with error.\n", district);
     }
 
-}
-int execlp(const char*file,const char *arg,.../*(char *) NULL */);
-
-int execlp(const char*city_manager,const char*arg){
-
+    printf("=== End of Workload Report ===\n");
+    fflush(stdout);
 }
 
-
-/*A process a running application that has own code.A Parent process ,works with a child process*/
-process Id unique identifier 
-Child process wil have the same code of the parent process 
-
-pid=fork()
--1=error
-0=child
-0>parent
-if (pid=0){
-    execlp(, )
+static void print_help(void) {
+    printf("Commands:\n");
+    printf("  start_monitor                     Start background monitor\n");
+    printf("  calculate_scores <d1> [d2] ...    Workload report per district\n");
+    printf("  help                              Show this message\n");
+    printf("  exit                              Quit city_hub\n");
 }
-remove the symbolic link in the parent process
 
-System calls 
-pid_t getpid(); PID of the calling process
-pid_t getppid();PID of the parent of the caling process
+int main(void) {
+    struct sigaction sa;
+    sa.sa_handler = SIG_DFL;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = SA_NOCLDWAIT;
+    sigaction(SIGCHLD, &sa, NULL);
 
-open()
-close()
-read()
-write()
-unlink()
-sigaction()
-kill()
-fork()
-exec*()
-do not use signal()
+    printf("=== city_hub ===\n");
+    printf("Type 'help' for available commands.\n\n");
+    fflush(stdout);
 
-/* monitor reports 
-at startup it creates or overwrites a hidden text file called .monitor_pid where it stores its main process ID. The file is situated at the same level of the directory tree as the district directories.
-when it ends, it deletes the above file
-the program only ends when it receives SIGINT, and writes a message on the standard output when it does
-the program responds to SIGUSR1 signals (which informs it that a new report has been added) by writing a message on the standard output
-*/
+    char line[1024];
+    while (1) {
+        printf("hub> ");
+        fflush(stdout);
 
+        if (fgets(line, sizeof(line), stdin) == NULL) {
+            printf("\n[city_hub] EOF — exiting.\n");
+            break;
+        }
 
-.monitor_pid
-SIGINT
-SIGUSR1
+        int len = strlen(line);
+        if (len > 0 && line[len - 1] == '\n') line[len - 1] = '\0';
 
+        char *tokens[64];
+        int token_count = 0;
+        char *tok = strtok(line, " \t");
+        while (tok && token_count < 63) {
+            tokens[token_count++] = tok;
+            tok = strtok(NULL, " \t");
+        }
 
-Example handling structure
-// Example in C
-FILE *f = fopen(".monitor_pid", "r");
-if (f == NULL) {
-    fprintf(log_file, "Error: Monitor PID not found. Monitor not informed.\n");
-} else {
-    pid_t pid;
-    fscanf(f, "%d", &pid);
-    fclose(f);
-    if (kill(pid, SIGUSR1) == 0) {
-        fprintf(log_file, "Report added. Monitor notified.\n");
-    } else {
-        fprintf(log_file, "Error: Could not send SIGUSR1. Monitor not informed.\n");
+        if (token_count == 0) continue;
+
+        if (strcmp(tokens[0], "exit") == 0 || strcmp(tokens[0], "quit") == 0) {
+            printf("[city_hub] Goodbye.\n");
+            break;
+        } else if (strcmp(tokens[0], "help") == 0) {
+            print_help();
+        } else if (strcmp(tokens[0], "start_monitor") == 0) {
+            cmd_start_monitor();
+        } else if (strcmp(tokens[0], "calculate_scores") == 0) {
+            cmd_calculate_scores(&tokens[1], token_count - 1);
+        } else {
+            printf("Unknown command: '%s'. Type 'help' for usage.\n", tokens[0]);
+        }
     }
+
+    return 0;
 }
-Fichier city_manager.c
+
+
+City MANAGER.C
+
 #include "city_manager.h"
 
 void mode_to_str(mode_t mode, char *buf) {
@@ -517,7 +638,9 @@ int main(int argc, char *argv[]) {
 
     return 0;
 }
-City .h
+
+
+CityManager.h
 #ifndef CITY_MANAGER_H
 #define CITY_MANAGER_H
 
@@ -564,58 +687,3 @@ int  parse_condition(const char *input, char *field, char *op, char *value);
 int  match_condition(Report *r, const char *field, const char *op, const char *value);
 
 #endif
-
-Monitor .c
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <unistd.h>
-#include <signal.h>
-#include <fcntl.h>
-#include <sys/stat.h>
-#include <errno.h>
-
-#define PID_FILE ".monitor_pid"
-
-static void handler_sigusr1(int sig) {
-    (void)sig;
-    const char *msg = "[monitor] New report added to the city!\n";
-    write(STDOUT_FILENO, msg, strlen(msg));
-}
-
-static void handler_sigint(int sig) {
-    (void)sig;
-    const char *msg = "[monitor] SIGINT received — shutting down. Goodbye.\n";
-    write(STDOUT_FILENO, msg, strlen(msg));
-    unlink(PID_FILE);
-    _exit(0);
-}
-
-int main(void) {
-    int fd=open(PID_FILE,O_WRONLY|O_CREAT|O_TRUNC,0644);
-    if (fd==-1) { perror("open .monitor_pid"); return 1; }
-    char pidbuf[32];
-    int len=snprintf(pidbuf,sizeof(pidbuf),"%d\n",(int)getpid());
-    if (write(fd,pidbuf,len)!=len) { perror("write .monitor_pid"); close(fd); return 1; }
-    close(fd);
-
-    printf("[monitor] Started. PID = %d\n",(int)getpid());
-    printf("[monitor] Waiting for signals (SIGUSR1 = new report, SIGINT = stop)...\n");
-    fflush(stdout);
-
-    struct sigaction sa;
-
-    sa.sa_handler=handler_sigusr1;
-    sigemptyset(&sa.sa_mask);
-    sa.sa_flags=SA_RESTART;
-    if (sigaction(SIGUSR1,&sa,NULL)==-1) { perror("sigaction SIGUSR1"); unlink(PID_FILE); return 1; }
-
-    sa.sa_handler=handler_sigint;
-    sigemptyset(&sa.sa_mask);
-    sa.sa_flags=0;
-    if (sigaction(SIGINT,&sa,NULL)==-1) { perror("sigaction SIGINT"); unlink(PID_FILE); return 1; }
-
-    while (1) pause();
-
-    return 0;
-}

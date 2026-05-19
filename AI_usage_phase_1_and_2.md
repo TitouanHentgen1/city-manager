@@ -160,4 +160,6 @@ int main(void) {
 
 The AI was useful for understanding which functions are async-signal-safe and why `signal()` is less portable than `sigaction()`. However, the difference between `exit()` and `_exit()` inside a signal handler was not explained by the AI without being asked — this required additional verification against the POSIX documentation. AI output always needs to be cross-checked with the actual safety requirements of the context it runs in.
 
+##Phase 3
+
 

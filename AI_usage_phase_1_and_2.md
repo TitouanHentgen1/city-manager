@@ -1,4 +1,4 @@
-# AI Usage — Phases 1 and 2
+# AI Usage — Phases 1, 2 and 3
 
 ## Phase 1
 

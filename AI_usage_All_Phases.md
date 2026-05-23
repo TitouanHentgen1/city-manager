@@ -1,10 +1,10 @@
-# AI Usage —ALL Phases 
-
-## Phase 1
+# AI Usage — All Phases
 
 **AI Tool used:** Claude (claude.ai)
 
 ---
+
+## Phase 1
 
 ### Function: `parse_condition`
 
@@ -85,10 +85,6 @@ The AI generates a functional skeleton quickly but consistently misses edge case
 
 ## Phase 2
 
-**AI Tool used:** Claude (claude.ai)
-
----
-
 ### `monitor_reports` — signal handlers
 
 **Question asked:**
@@ -98,7 +94,7 @@ The AI generates a functional skeleton quickly but consistently misses edge case
 ```c
 static void handler_sigusr1(int sig) {
     (void)sig;
-    const char *msg = "[monitor] Report added \n";
+    const char *msg = "[monitor] Report added\n";
     write(STDOUT_FILENO, msg, strlen(msg));
 }
 
@@ -112,9 +108,8 @@ static void handler_sigint(int sig) {
 ```
 
 **Changes made:**
-- `exit(0)` was replaced with `_exit(0)` in `handler_sigint`: the AI used `exit()` which is not async-signal-safe because it flushes stdio buffers and runs `atexit` handlers that may conflict with interrupted code. `_exit()` terminates immediately and is safe to call from a signal handler
-- The `\n` escape sequence in the string literals was written as `/n` in the AI output (a typo) — corrected to `\n`
-- Message text was updated to match the final program output format
+- `exit(0)` was replaced with `_exit(0)` in `handler_sigint`: `exit()` is not async-signal-safe because it flushes stdio buffers and runs `atexit` handlers that may conflict with interrupted code. `_exit()` terminates immediately and is safe to call from a signal handler
+- Message text was updated to match the final prefixed format (`END:`, `MSG:`) used in Phase 3
 
 ---
 
@@ -125,41 +120,71 @@ static void handler_sigint(int sig) {
 
 **Code suggested by AI:**
 ```c
-int main(void) {
-    int fd = open(PID_FILE, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-    if (fd == -1) { perror("open .monitor_pid"); return 1; }
-    char pidbuf[32];
-    int len = snprintf(pidbuf, sizeof(pidbuf), "%d\n", (int)getpid());
-    if (write(fd, pidbuf, len) != len) { perror("write .monitor_pid"); close(fd); return 1; }
-    close(fd);
-    printf("[monitor] Started. PID = %d\n", (int)getpid());
-    printf("[monitor] Waiting for signals (SIGUSR1 = new report, SIGINT = stop)...\n");
-    fflush(stdout);
-    struct sigaction sa;
-    sa.sa_handler = handler_sigusr1;
-    sigemptyset(&sa.sa_mask);
-    sa.sa_flags = SA_RESTART;
-    if (sigaction(SIGUSR1, &sa, NULL) == -1) { perror("sigaction SIGUSR1"); unlink(PID_FILE); return 1; }
-    sa.sa_handler = handler_sigint;
-    sigemptyset(&sa.sa_mask);
-    sa.sa_flags = 0;
-    if (sigaction(SIGINT, &sa, NULL) == -1) { perror("sigaction SIGINT"); unlink(PID_FILE); return 1; }
-    while (1) pause();
-    return 0;
-}
+struct sigaction sa;
+sa.sa_handler = handler_sigusr1;
+sigemptyset(&sa.sa_mask);
+sa.sa_flags = SA_RESTART;
+sigaction(SIGUSR1, &sa, NULL);
+
+sa.sa_handler = handler_sigint;
+sigemptyset(&sa.sa_mask);
+sa.sa_flags = 0;
+sigaction(SIGINT, &sa, NULL);
+
+while (1) pause();
 ```
 
 **Changes made:**
 - The overall structure was correct and kept as-is
-- Verified that `SA_RESTART` is set for `SIGUSR1` (so `pause()` restarts after the handler returns and the program keeps waiting) and not for `SIGINT` (since the handler calls `_exit()` and never returns)
+- Verified that `SA_RESTART` is set for `SIGUSR1` (so `pause()` restarts after the handler returns) and not for `SIGINT` (since the handler calls `_exit()` and never returns)
+- Error handling added on each `sigaction` call — the AI version had none
 - The `signal()` call was never used, in compliance with the project requirement to use only `sigaction()`
 
 ---
 
 ### What I learned
 
-The AI was useful for understanding which functions are async-signal-safe and why `signal()` is less portable than `sigaction()`. However, the difference between `exit()` and `_exit()` inside a signal handler was not explained by the AI without being asked — this required additional verification against the POSIX documentation. AI output always needs to be cross-checked with the actual safety requirements of the context it runs in.
+The AI was useful for understanding which functions are async-signal-safe and why `signal()` is less portable than `sigaction()`. However, the difference between `exit()` and `_exit()` inside a signal handler was not explained without being asked — this required additional verification. AI output always needs to be cross-checked with the actual safety requirements of the context it runs in.
 
-##Phase 3
+---
 
+## Phase 3
 
+### `city_hub` — dup2 and exec interaction
+
+**Question asked:**
+> "After `dup2(pipefd[1], STDOUT_FILENO)` and then `exec`, does the child's `printf` go into the pipe?"
+
+The AI confirmed yes — file descriptors survive `exec`, so the child's stdout is the pipe. It also pointed out that the original `pipefd[1]` must be closed after `dup2`, otherwise the pipe never receives EOF and the parent's `read` blocks forever.
+
+**Applied:** Both in `run_hub_mon` (for `monitor_reports`) and in `cmd_calculate_scores` (for the scorer), `dup2` is followed immediately by closing the original write-end fd before calling `exec` or `run_scorer`.
+
+---
+
+### `city_hub` — reading lines from a pipe
+
+**Question asked:**
+> "What is the safest way to read complete lines from a pipe when I don't know the line length?"
+
+The AI suggested using `fdopen` + `fgets`. I tried it but noticed it introduced buffering delays — messages from the monitor were not showing up immediately in the terminal. I switched to reading one byte at a time with `read()` until hitting a `\n`, which gives immediate delivery. The AI's suggestion was a starting point but I ended up doing it differently based on actual observed behavior.
+
+---
+
+### What I learned
+
+In Phase 3 I used the AI mainly to confirm how system calls interact with each other (pipes, `dup2`, `exec`). The actual architecture — the prefix protocol (`MSG:`, `ERR:`, `END:`), the two-level fork chain, the scorer integrated directly into `city_hub` — was designed and written entirely by me. The AI answered specific technical questions but did not contribute to the overall structure.
+
+---
+
+## Summary
+
+| Component | AI involvement |
+|---|---|
+| `parse_condition` | AI generated, reviewed and fixed |
+| `match_condition` | AI generated, heavily patched |
+| Signal handler safety, `SA_RESTART` | AI explained, I applied |
+| `dup2` + `exec` interaction | AI confirmed behavior, I applied |
+| Line reading strategy | AI suggested `fdopen`, I rejected it |
+| All commands (Phase 1) | Written by me |
+| `notify_monitor`, `remove_district` (Phase 2) | Written by me |
+| `city_hub`, scorer, prefix protocol (Phase 3) | Written by me |

@@ -79,7 +79,7 @@ int match_condition(Report *r, const char *field, const char *op, const char *va
 
 ### What I learned
 
-The AI generates a functional skeleton quickly but consistently misses edge cases: incomplete branches, missing fields, and no input validation. Every line of AI output has to be reviewed carefully and tested against the actual struct and the rest of the program before it can be used.
+The AI gave a usable skeleton but missed several cases. Reviewing line by line before integrating is necessary.
 
 ---
 
@@ -144,7 +144,7 @@ while (1) pause();
 
 ### What I learned
 
-The AI was useful for understanding which functions are async-signal-safe and why `signal()` is less portable than `sigaction()`. However, the difference between `exit()` and `_exit()` inside a signal handler was not explained without being asked — this required additional verification. AI output always needs to be cross-checked with the actual safety requirements of the context it runs in.
+Useful for understanding async-signal-safe rules, but the `exit` vs `_exit` distinction needed extra checking on my side.
 
 ---
 
@@ -172,19 +172,4 @@ The AI suggested using `fdopen` + `fgets`. I tried it but noticed it introduced 
 
 ### What I learned
 
-In Phase 3 I used the AI mainly to confirm how system calls interact with each other (pipes, `dup2`, `exec`). The actual architecture — the prefix protocol (`MSG:`, `ERR:`, `END:`), the two-level fork chain, the scorer integrated directly into `city_hub` — was designed and written entirely by me. The AI answered specific technical questions but did not contribute to the overall structure.
-
----
-
-## Summary
-
-| Component | AI involvement |
-|---|---|
-| `parse_condition` | AI generated, reviewed and fixed |
-| `match_condition` | AI generated, heavily patched |
-| Signal handler safety, `SA_RESTART` | AI explained, I applied |
-| `dup2` + `exec` interaction | AI confirmed behavior, I applied |
-| Line reading strategy | AI suggested `fdopen`, I rejected it |
-| All commands (Phase 1) | Written by me |
-| `notify_monitor`, `remove_district` (Phase 2) | Written by me |
-| `city_hub`, scorer, prefix protocol (Phase 3) | Written by me |
+Helpful for confirming syscall behavior, but the overall architecture was designed and written entirely by me.

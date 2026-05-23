@@ -30,7 +30,7 @@ void mode_to_str(mode_t mode, char *buf);
 int  check_access(const char *path, const char *role, int need_write);
 void log_action(const char *district, const char *role, const char *user, const char *action);
 void notify_monitor(const char *district, const char *role, const char *user);
-void create_district(const char *district_id);
+void create_district(const char *id);
 void cmd_add(const char *district, const char *role, const char *user,
              double lat, double lon, const char *category,
              int severity, const char *description);
@@ -44,4 +44,3 @@ int  parse_condition(const char *input, char *field, char *op, char *value);
 int  match_condition(Report *r, const char *field, const char *op, const char *value);
 
 #endif
-

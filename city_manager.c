@@ -12,13 +12,11 @@ int check_access(const char *path, const char *role, int need_write) {
     if (stat(path,&st)==-1) return 1;
     mode_t b=st.st_mode;
     if (strcmp(role,"manager")==0) {
-        if (need_write && !(b&S_IWUSR)) return 0;
-        if (!need_write && !(b&S_IRUSR)) return 0;
-    } else {
-        if (need_write && !(b&S_IWGRP)) return 0;
-        if (!need_write && !(b&S_IRGRP)) return 0;
+        if (need_write) return (b&S_IWUSR)!=0;
+        return (b&S_IRUSR)!=0;
     }
-    return 1;
+    if (need_write) return (b&S_IWGRP)!=0;
+    return (b&S_IRGRP)!=0;
 }
 
 void log_action(const char *district, const char *role, const char *user, const char *action) {
@@ -27,7 +25,7 @@ void log_action(const char *district, const char *role, const char *user, const 
     int fd=open(path,O_WRONLY|O_APPEND);
     if (fd==-1) return;
     time_t now=time(NULL);
-    char ts[32], line[512];
+    char ts[32],line[512];
     strftime(ts,sizeof(ts),"%Y-%m-%d %H:%M:%S",localtime(&now));
     int len=snprintf(line,sizeof(line),"[%s] role=%s user=%s action=%s\n",ts,role,user,action);
     write(fd,line,len);
@@ -37,30 +35,23 @@ void log_action(const char *district, const char *role, const char *user, const 
 void notify_monitor(const char *district, const char *role, const char *user) {
     int fd=open(MONITOR_PID_FILE,O_RDONLY);
     if (fd==-1) {
-        log_action(district,role,user,"add - WARNING: monitor not found (no .monitor_pid)");
+        log_action(district,role,user,"add - WARNING: monitor not found");
         return;
     }
     char buf[32];
     memset(buf,0,sizeof(buf));
     ssize_t n=read(fd,buf,sizeof(buf)-1);
     close(fd);
-    if (n<=0) {
-        log_action(district,role,user,"add - ERROR: .monitor_pid is empty or unreadable");
-        return;
-    }
-    pid_t monitor_pid=(pid_t)atoi(buf);
-    if (monitor_pid<=0) {
-        log_action(district,role,user,"add - ERROR: invalid PID in .monitor_pid");
-        return;
-    }
-    if (kill(monitor_pid,SIGUSR1)==-1) {
+    if (n<=0) { log_action(district,role,user,"add - ERROR: unreadable pid file"); return; }
+    pid_t pid=(pid_t)atoi(buf);
+    if (pid<=0) { log_action(district,role,user,"add - ERROR: invalid pid"); return; }
+    if (kill(pid,SIGUSR1)==-1) {
         char msg[128];
-        snprintf(msg,sizeof(msg),"add - ERROR: kill(SIGUSR1, pid=%d) failed: %s",
-                 (int)monitor_pid,strerror(errno));
+        snprintf(msg,sizeof(msg),"add - ERROR: signal failed (pid=%d)",(int)pid);
         log_action(district,role,user,msg);
     } else {
-        char msg[128];
-        snprintf(msg,sizeof(msg),"add - monitor notified via SIGUSR1 (pid=%d)",(int)monitor_pid);
+        char msg[64];
+        snprintf(msg,sizeof(msg),"add - monitor notified (pid=%d)",(int)pid);
         log_action(district,role,user,msg);
     }
 }
@@ -78,14 +69,9 @@ void create_district(const char *id) {
     chmod(dir,0750);
 
     int fd;
-    fd=open(reports,O_WRONLY|O_CREAT|O_EXCL,0664);
-    if (fd!=-1) { chmod(reports,0664); close(fd); }
-
-    fd=open(cfg,O_WRONLY|O_CREAT|O_EXCL,0640);
-    if (fd!=-1) { chmod(cfg,0640); write(fd,"threshold=1\n",12); close(fd); }
-
-    fd=open(logf,O_WRONLY|O_CREAT|O_EXCL,0644);
-    if (fd!=-1) { chmod(logf,0644); close(fd); }
+    fd=open(reports,O_WRONLY|O_CREAT|O_EXCL,0664); if (fd!=-1) { chmod(reports,0664); close(fd); }
+    fd=open(cfg,O_WRONLY|O_CREAT|O_EXCL,0640);     if (fd!=-1) { chmod(cfg,0640); write(fd,"threshold=1\n",12); close(fd); }
+    fd=open(logf,O_WRONLY|O_CREAT|O_EXCL,0644);    if (fd!=-1) { chmod(logf,0644); close(fd); }
 
     unlink(link);
     symlink(reports,link);
@@ -117,7 +103,6 @@ void cmd_add(const char *district, const char *role, const char *user,
     if (write(fd,&r,sizeof(r))!=(ssize_t)sizeof(r)) perror("write");
     else printf("Report #%d added to '%s'\n",next_id,district);
     close(fd);
-
     log_action(district,role,user,"add");
     notify_monitor(district,role,user);
 }
@@ -130,10 +115,10 @@ void cmd_list(const char *district, const char *role) {
     struct stat st;
     if (stat(path,&st)==-1) { fprintf(stderr,"District not found\n"); return; }
 
-    char perm[10], mtime[32];
+    char perm[10],mtime[32];
     mode_to_str(st.st_mode,perm);
     strftime(mtime,sizeof(mtime),"%Y-%m-%d %H:%M",localtime(&st.st_mtime));
-    printf("=== %s ===\nPermissions: %s | Size: %lld bytes | Modified: %s\n",
+    printf("=== %s ===\nPerms: %s | Size: %lld bytes | Modified: %s\n",
            district,perm,(long long)st.st_size,mtime);
 
     char link[256];
@@ -156,9 +141,8 @@ void cmd_list(const char *district, const char *role) {
         count++;
     }
     close(fd);
-    if (count==0) printf("(No reports)\n");
-    else printf("Total: %d report(s)\n",count);
-    log_action(district,"manager",role,"list");
+    printf(count==0 ? "(No reports)\n" : "Total: %d report(s)\n",count);
+    log_action(district,role,role,"list");
 }
 
 void cmd_view(const char *district, int report_id, const char *role) {
@@ -221,9 +205,9 @@ void cmd_update_threshold(const char *district, int value, const char *role, con
     if (stat(path,&st)==-1) { perror("stat"); return; }
     if ((st.st_mode&0777)!=0640) {
         char p[10]; mode_to_str(st.st_mode,p);
-        fprintf(stderr,"Wrong permissions on district.cfg (%s)\n",p); return;
+        fprintf(stderr,"Bad permissions on district.cfg: %s\n",p); return;
     }
-    if (value<1||value>3) { fprintf(stderr,"Invalid threshold (1-3)\n"); return; }
+    if (value<1||value>3) { fprintf(stderr,"Threshold must be 1-3\n"); return; }
 
     int fd=open(path,O_WRONLY|O_TRUNC);
     if (fd==-1) { perror("open"); return; }
@@ -291,7 +275,7 @@ void cmd_filter(const char *district, const char *role, int cond_count, char **c
 
     int fd=open(path,O_RDONLY);
     if (fd==-1) { perror("open"); return; }
-    printf("=== Filter on '%s' ===\n",district);
+    printf("=== Filter: '%s' ===\n",district);
     Report r; int found=0;
 
     while (read(fd,&r,sizeof(r))==(ssize_t)sizeof(r)) {
@@ -310,37 +294,25 @@ void cmd_filter(const char *district, const char *role, int cond_count, char **c
         }
     }
     close(fd);
-    if (found==0) printf("(No results)\n");
-    else printf("Total: %d report(s)\n",found);
+    printf(found==0 ? "(No results)\n" : "Total: %d report(s)\n",found);
 }
 
 void cmd_remove_district(const char *district, const char *role, const char *user) {
-    if (strcmp(role,"manager")!=0) {
-        fprintf(stderr,"Error: remove_district is manager only\n");
-        return;
+    if (strcmp(role,"manager")!=0) { fprintf(stderr,"Manager only\n"); return; }
+    if (!district||!*district||strchr(district,'/')||strchr(district,'.')) {
+        fprintf(stderr,"Invalid district name\n"); return;
     }
-    if (!district||*district=='\0'||strchr(district,'/')!=NULL||strchr(district,'.')!=NULL) {
-        fprintf(stderr,"Error: invalid district name '%s'\n",district?district:"");
-        return;
-    }
-
     char dir_path[300];
     snprintf(dir_path,sizeof(dir_path),"districts/%s",district);
 
     struct stat st;
     if (stat(dir_path,&st)==-1||!S_ISDIR(st.st_mode)) {
-        fprintf(stderr,"Error: district '%s' does not exist\n",district);
-        return;
+        fprintf(stderr,"District '%s' not found\n",district); return;
     }
 
     pid_t pid=fork();
     if (pid<0) { perror("fork"); return; }
-
-    if (pid==0) {
-        execlp("rm","rm","-rf",dir_path,(char *)NULL);
-        perror("execlp");
-        _exit(1);
-    }
+    if (pid==0) { execlp("rm","rm","-rf",dir_path,(char*)NULL); perror("execlp"); _exit(1); }
 
     int status;
     if (waitpid(pid,&status,0)==-1) { perror("waitpid"); return; }
@@ -348,12 +320,12 @@ void cmd_remove_district(const char *district, const char *role, const char *use
     if (WIFEXITED(status)&&WEXITSTATUS(status)==0) {
         char link[256];
         snprintf(link,sizeof(link),"active_reports-%s",district);
-        if (unlink(link)==-1&&errno!=ENOENT) perror("unlink symlink");
-        printf("District '%s' and its symlink removed\n",district);
+        unlink(link);
+        printf("District '%s' removed\n",district);
     } else {
-        fprintf(stderr,"Error: rm -rf failed (code=%d)\n",
-                WIFEXITED(status)?WEXITSTATUS(status):-1);
+        fprintf(stderr,"rm failed\n");
     }
+    (void)user;
 }
 
 static void usage(void) {
@@ -365,8 +337,7 @@ static void usage(void) {
         "  city_manager --role manager --user <u> --remove_report <district> <id>\n"
         "  city_manager --role manager --user <u> --update_threshold <district> <n>\n"
         "  city_manager --role <r> --user <u> --filter <district> <cond...>\n"
-        "  city_manager --role manager --user <u> --remove_district <district>\n"
-    );
+        "  city_manager --role manager --user <u> --remove_district <district>\n");
 }
 
 int main(int argc, char *argv[]) {
@@ -395,7 +366,7 @@ int main(int argc, char *argv[]) {
         else if (!strcmp(argv[i],"--desc")             &&i+1<argc) strncpy(description,argv[++i],sizeof(description)-1);
     }
 
-    if (!*role) { fprintf(stderr,"--role required\n"); usage(); return 1; }
+    if (!*role)    { fprintf(stderr,"--role required\n"); usage(); return 1; }
     if (!*command) { fprintf(stderr,"Missing command\n"); usage(); return 1; }
 
     if      (!strcmp(command,"add"))              cmd_add(district,role,user,lat,lon,category,severity,description);
